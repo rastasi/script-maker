@@ -4,47 +4,80 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
+
+	"github.com/AlecAivazis/survey/v2"
 )
 
 func main() {
-	fileName := os.ExpandEnv("$HOME/.zsh_history")
+	fileName := getFileName()
 	fmt.Println("Reading from file:", fileName)
 
-	var n int
-	fmt.Print("Enter the number of last lines to display: ")
-	fmt.Scanf("%d", &n)
+	n := getNumberOfLines()
 
-	file, err := os.Open(fileName)
+	lines, err := readLinesFromFile(fileName)
 	if err != nil {
-		fmt.Println("Error opening file:", err)
-		return
-	}
-	defer file.Close()
-
-	scanner := bufio.NewScanner(file)
-	var lines []string
-
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.TrimSpace(line) != "" {
-			if strings.HasPrefix(line, ":") {
-				parts := strings.SplitN(line, ";", 2)
-				if len(parts) == 2 {
-					lines = append(lines, parts[1])
-				}
-			} else {
-				lines = append(lines, line)
-			}
-		}
-	}
-
-	if err := scanner.Err(); err != nil {
 		fmt.Println("Error reading file:", err)
 		return
 	}
 
+	displayLastLines(lines, n)
+
+	selectedIndices := selectLines(lines, n)
+	outputFileName := getOutputFileName()
+	saveSelectedLines(lines, selectedIndices, outputFileName)
+}
+
+func getFileName() string {
+	return os.ExpandEnv("$HOME/.zsh_history")
+}
+
+func getNumberOfLines() int {
+	var n int
+	fmt.Print("Enter the number of last lines to display: ")
+	fmt.Scanf("%d", &n)
+	return n
+}
+
+func readLinesFromFile(fileName string) ([]string, error) {
+	file, err := os.Open(fileName)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	var lines []string
+	scanner := bufio.NewScanner(file)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if validLine(line) {
+			lines = append(lines, extractCommand(line))
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+
+	return lines, nil
+}
+
+func validLine(line string) bool {
+	return strings.TrimSpace(line) != ""
+}
+
+func extractCommand(line string) string {
+	if strings.HasPrefix(line, ":") {
+		parts := strings.SplitN(line, ";", 2)
+		if len(parts) == 2 {
+			return parts[1]
+		}
+	}
+	return line
+}
+
+func displayLastLines(lines []string, n int) {
 	if n > len(lines) {
 		n = len(lines)
 	}
@@ -53,16 +86,43 @@ func main() {
 	for i, line := range lines[start:] {
 		fmt.Printf("%d: %s\n", i+start, line)
 	}
+}
 
-	var indices string
-	fmt.Print("Enter the line numbers to save (comma-separated): ")
-	fmt.Scanf("%s", &indices)
+func selectLines(lines []string, n int) []int {
+	if n > len(lines) {
+		n = len(lines)
+	}
 
-	fmt.Print("Enter the output file name (without extension): ")
+	start := len(lines) - n
+	items := make([]string, n)
+	for i := 0; i < n; i++ {
+		items[i] = lines[start+i]
+	}
+
+	selected := []int{}
+	prompt := &survey.MultiSelect{
+		Message: "Select lines (use arrow keys and space to select, enter to confirm):",
+		Options: items,
+	}
+
+	survey.AskOne(prompt, &selected)
+
+	// Adjust indices to match original line numbers
+	for i := range selected {
+		selected[i] += start
+	}
+
+	return selected
+}
+
+func getOutputFileName() string {
 	var outputFileName string
+	fmt.Print("Enter the output file name (without extension): ")
 	fmt.Scanf("%s", &outputFileName)
-	outputFileName += ".sh"
+	return outputFileName + ".sh"
+}
 
+func saveSelectedLines(lines []string, indices []int, outputFileName string) {
 	outputFile, err := os.Create(outputFileName)
 	if err != nil {
 		fmt.Println("Error creating file:", err)
@@ -70,29 +130,32 @@ func main() {
 	}
 	defer outputFile.Close()
 
-	indicesList := strings.Split(indices, ",")
-	for _, indexStr := range indicesList {
-		index, err := strconv.Atoi(strings.TrimSpace(indexStr))
-		if err != nil {
-			fmt.Println("Invalid index:", indexStr)
-			continue
-		}
-		if index >= start && index < len(lines) {
-			_, err := outputFile.WriteString(lines[index] + "\n")
-			if err != nil {
-				fmt.Println("Error writing to file:", err)
-				return
-			}
-		} else {
-			fmt.Println("Index out of range:", index)
+	for _, index := range indices {
+		if indexInRange(index, lines) {
+			writeLineToFile(outputFile, lines[index])
 		}
 	}
 
-	err = outputFile.Chmod(0755)
+	makeFileExecutable(outputFileName)
+}
+
+func indexInRange(index int, lines []string) bool {
+	return index >= 0 && index < len(lines)
+}
+
+func writeLineToFile(outputFile *os.File, line string) {
+	_, err := outputFile.WriteString(line + "\n")
+	if err != nil {
+		fmt.Println("Error writing to file:", err)
+	}
+}
+
+func makeFileExecutable(fileName string) {
+	err := os.Chmod(fileName, 0755)
 	if err != nil {
 		fmt.Println("Error making file executable:", err)
 		return
 	}
 
-	fmt.Println("Script saved and made executable:", outputFileName)
+	fmt.Println("Script saved and made executable:", fileName)
 }
