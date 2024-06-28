@@ -9,23 +9,40 @@ import (
 	"github.com/AlecAivazis/survey/v2"
 )
 
+type ZshHistory struct {
+	lines []string
+}
+
+type FileReader struct {
+	fileName string
+}
+
+type FileWriter struct {
+	fileName string
+}
+
+type Selection struct {
+	numLines int
+	indices  []int
+}
+
 func main() {
-	fileName := getFileName()
-	fmt.Println("Reading from file:", fileName)
+	fileReader := FileReader{fileName: getFileName()}
+	fmt.Println("Reading from file:", fileReader.fileName)
 
-	n := getNumberOfLines()
-
-	lines, err := readLinesFromFile(fileName)
+	history, err := fileReader.readLines()
 	if err != nil {
 		fmt.Println("Error reading file:", err)
 		return
 	}
 
-	displayLastLines(lines, n)
+	selection := Selection{numLines: getNumberOfLines()}
+	history.displayLastLines(selection.numLines)
 
-	selectedIndices := selectLines(lines, n)
+	selection.indices = history.selectLines(selection.numLines)
 	outputFileName := getOutputFileName()
-	saveSelectedLines(lines, selectedIndices, outputFileName)
+	fileWriter := FileWriter{fileName: outputFileName}
+	fileWriter.saveSelectedLines(history, selection.indices)
 }
 
 func getFileName() string {
@@ -33,37 +50,36 @@ func getFileName() string {
 }
 
 func getNumberOfLines() int {
-	var n int
+	var numLines int
 	fmt.Print("Enter the number of last lines to display: ")
-	fmt.Scanf("%d", &n)
-	return n
+	fmt.Scanf("%d", &numLines)
+	return numLines
 }
 
-func readLinesFromFile(fileName string) ([]string, error) {
-	file, err := os.Open(fileName)
+func (fr *FileReader) readLines() (ZshHistory, error) {
+	file, err := os.Open(fr.fileName)
 	if err != nil {
-		return nil, err
+		return ZshHistory{}, err
 	}
 	defer file.Close()
 
 	var lines []string
 	scanner := bufio.NewScanner(file)
-
 	for scanner.Scan() {
 		line := scanner.Text()
-		if validLine(line) {
+		if isValidLine(line) {
 			lines = append(lines, extractCommand(line))
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
-		return nil, err
+		return ZshHistory{}, err
 	}
 
-	return lines, nil
+	return ZshHistory{lines: lines}, nil
 }
 
-func validLine(line string) bool {
+func isValidLine(line string) bool {
 	return strings.TrimSpace(line) != ""
 }
 
@@ -77,28 +93,39 @@ func extractCommand(line string) string {
 	return line
 }
 
-func displayLastLines(lines []string, n int) {
-	if n > len(lines) {
-		n = len(lines)
+func (zh *ZshHistory) displayLastLines(numLines int) {
+	if numLines > len(zh.lines) {
+		numLines = len(zh.lines)
 	}
 
-	start := len(lines) - n
-	for i, line := range lines[start:] {
+	start := len(zh.lines) - numLines
+	for i, line := range zh.lines[start:] {
 		fmt.Printf("%d: %s\n", i+start, line)
 	}
 }
 
-func selectLines(lines []string, n int) []int {
-	if n > len(lines) {
-		n = len(lines)
+func (zh *ZshHistory) selectLines(numLines int) []int {
+	if numLines > len(zh.lines) {
+		numLines = len(zh.lines)
 	}
 
-	start := len(lines) - n
-	items := make([]string, n)
-	for i := 0; i < n; i++ {
-		items[i] = lines[start+i]
+	start := len(zh.lines) - numLines
+	items := make([]string, numLines)
+	for i := 0; i < numLines; i++ {
+		items[i] = zh.lines[start+i]
 	}
 
+	selectedIndices := promptUserSelection(items)
+
+	// Adjust indices to match original line numbers
+	for i := range selectedIndices {
+		selectedIndices[i] += start
+	}
+
+	return selectedIndices
+}
+
+func promptUserSelection(items []string) []int {
 	selected := []int{}
 	prompt := &survey.MultiSelect{
 		Message: "Select lines (use arrow keys and space to select, enter to confirm):",
@@ -106,11 +133,6 @@ func selectLines(lines []string, n int) []int {
 	}
 
 	survey.AskOne(prompt, &selected)
-
-	// Adjust indices to match original line numbers
-	for i := range selected {
-		selected[i] += start
-	}
 
 	return selected
 }
@@ -122,8 +144,8 @@ func getOutputFileName() string {
 	return outputFileName + ".sh"
 }
 
-func saveSelectedLines(lines []string, indices []int, outputFileName string) {
-	outputFile, err := os.Create(outputFileName)
+func (fw *FileWriter) saveSelectedLines(history ZshHistory, indices []int) {
+	outputFile, err := os.Create(fw.fileName)
 	if err != nil {
 		fmt.Println("Error creating file:", err)
 		return
@@ -131,15 +153,15 @@ func saveSelectedLines(lines []string, indices []int, outputFileName string) {
 	defer outputFile.Close()
 
 	for _, index := range indices {
-		if indexInRange(index, lines) {
-			writeLineToFile(outputFile, lines[index])
+		if isIndexInRange(index, history.lines) {
+			writeLineToFile(outputFile, history.lines[index])
 		}
 	}
 
-	makeFileExecutable(outputFileName)
+	makeFileExecutable(fw.fileName)
 }
 
-func indexInRange(index int, lines []string) bool {
+func isIndexInRange(index int, lines []string) bool {
 	return index >= 0 && index < len(lines)
 }
 
